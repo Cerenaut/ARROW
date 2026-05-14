@@ -144,9 +144,18 @@ class LongTermReplay(Replay):
 
 
 class MultiTypeReplay(Replay):
-    def __init__(self, *replays: Replay) -> None:
+    def __init__(
+        self,
+        *replays: Replay,
+        sampling_weights: tuple[float, ...] | None = None,
+    ) -> None:
         super().__init__()
         self.replays = replays
+        if sampling_weights is None:
+            self.sampling_weights = tuple(1.0 / len(replays) for _ in replays)
+        else:
+            assert len(sampling_weights) == len(replays)
+            self.sampling_weights = sampling_weights
 
     @property
     def n_valid(self) -> int:
@@ -161,4 +170,6 @@ class MultiTypeReplay(Replay):
             replay.add(acts, obss, rews, conts, resets)
 
     def minibatch(self, mb_t: int, mb_n: int, mb_device: str = "cuda") -> tuple[ActionT, ImageT, RewardT, ContT, ResetT]:
-        return random.choice(self.replays).minibatch(mb_t, mb_n, mb_device)
+        replay = random.choices(self.replays, weights=self.sampling_weights, k=1)[0]
+        return replay.minibatch(mb_t, mb_n, mb_device)
+

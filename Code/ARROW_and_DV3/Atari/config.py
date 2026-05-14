@@ -13,6 +13,39 @@ from replay import FifoReplay, LongTermReplay, MultiTypeReplay, Replay
 
 T = TypeVar("T", bound="Serialisable")
 
+ArrowReplayCapacityRatio = Literal["50-50", "25-75", "75-25"]
+
+
+def _arrow_fifo_ltdm_capacity_ns(
+    total_slots: int, ratio: ArrowReplayCapacityRatio
+) -> tuple[int, int]:
+    """Split total trajectory slots between FIFO and LTDM (FIFO share listed first)."""
+    if ratio == "50-50":
+        n_fifo = total_slots // 2
+        n_ltdm = total_slots - n_fifo
+    elif ratio == "25-75":
+        n_fifo = total_slots // 4
+        n_ltdm = total_slots - n_fifo
+    elif ratio == "75-25":
+        n_ltdm = total_slots // 4
+        n_fifo = total_slots - n_ltdm
+    else:
+        raise AssertionError(ratio)
+    return n_fifo, n_ltdm
+
+
+def _arrow_fifo_ltdm_sampling_weights(
+    ratio: ArrowReplayCapacityRatio,
+) -> tuple[float, float]:
+    """Minibatch sampling weights (FIFO, LTDM) matching --arrow-replay-ratio / capacity split."""
+    if ratio == "50-50":
+        return 0.5, 0.5
+    if ratio == "25-75":
+        return 0.25, 0.75
+    if ratio == "75-25":
+        return 0.75, 0.25
+    raise AssertionError(ratio)
+
 
 @dataclass
 class Serialisable:
@@ -141,6 +174,8 @@ class Config(Serialisable):
 
     action_space: int = 18
     replay_buffers: list[RbConfig] = field(default_factory=list)
+    # ARROW only: split of total capacity 2 * data_n_max between FifoReplay vs LongTermReplay
+    arrow_replay_capacity_ratio: ArrowReplayCapacityRatio = "50-50"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -167,12 +202,30 @@ class Config(Serialisable):
 
     def get_replay_buffer(self) -> Replay:
         if self.algorithm == "arrow":
-            return MultiTypeReplay(
-                *[
-                    rc.rb_type(self.data_t, self.data_n_max, self.action_space, rc.rb_device)
-                    for rc in self.replay_buffers
-                ]
+            total_slots = 2 * self.data_n_max
+            n_fifo, n_ltdm = _arrow_fifo_ltdm_capacity_ns(
+                total_slots, self.arrow_replay_capacity_ratio
             )
+
+            def _arrow_n(rb: RbConfig) -> int:
+                if rb.rb_type is FifoReplay:
+                    return n_fifo
+                if rb.rb_type is LongTermReplay:
+                    return n_ltdm
+                raise AssertionError(f"Unexpected replay type: {rb.rb_type}")
+
+            w_fifo, w_ltdm = _arrow_fifo_ltdm_sampling_weights(
+                self.arrow_replay_capacity_ratio
+            )
+            sampling_weights = tuple(
+                w_fifo if rc.rb_type is FifoReplay else w_ltdm
+                for rc in self.replay_buffers
+            )
+            replays = [
+                rc.rb_type(self.data_t, _arrow_n(rc), self.action_space, rc.rb_device)
+                for rc in self.replay_buffers
+            ]
+            return MultiTypeReplay(*replays, sampling_weights=sampling_weights)
         if self.algorithm == "dv3" or self.algorithm == "sac":
             rc = self.replay_buffers[0]
             return rc.rb_type(self.data_t, self.sac_dv3_data_n_max, self.action_space, rc.rb_device)
