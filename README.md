@@ -75,11 +75,40 @@ pip install .
 
 ## Running Locally
 - `cd path/to/ARROW/Folder`
-- ARROW and DV3: `python Code/ARROW_and_DV3/Atari/train.py --config /path/to/config.json`
-- SAC: `Code/SAC/Atari/sac.py --config /path/to/config.json`
+- ARROW and DV3 (Atari): `python Code/ARROW_and_DV3/Atari/train.py --config /path/to/config.json`
+- ARROW and DV3 (CoinRun): `python Code/ARROW_and_DV3/CoinRun/train.py --config /path/to/config.json`
+- SAC: `python Code/SAC/Atari/sac.py --config /path/to/config.json`
+
+### ARROW FIFO / LTDM capacity ratio
+ARROW splits its trajectory-slot budget between the short-term FIFO buffer and the long-term distribution-matching (LTDM) buffer. The split is controlled by `arrow_replay_capacity_ratio`, which can be set in the config file or overridden on the command line via `--arrow-replay-ratio`. Supported values are:
+
+| Ratio | FIFO share | LTDM share |
+|------:|-----------:|-----------:|
+| `50-50` (default) | 1/2 | 1/2 |
+| `25-75` | 1/4 | 3/4 |
+| `75-25` | 3/4 | 1/4 |
+
+The same ratio is also used as the per-minibatch sampling weight between the two sub-buffers. If `--arrow-replay-ratio` is omitted, the value in the config is used; if neither is set, ARROW falls back to the `50-50` default. The flag is ignored by DV3 and SAC runs.
+
+Examples:
+```bash
+# Default 50/50 (no flag needed)
+python Code/ARROW_and_DV3/Atari/train.py --config /path/to/arrow-config.json
+
+# Explicit 50/50
+python Code/ARROW_and_DV3/Atari/train.py --config /path/to/arrow-config.json --arrow-replay-ratio 50-50
+
+# 25% FIFO / 75% LTDM
+python Code/ARROW_and_DV3/Atari/train.py --config /path/to/arrow-config.json --arrow-replay-ratio 25-75
+
+# 75% FIFO / 25% LTDM
+python Code/ARROW_and_DV3/Atari/train.py --config /path/to/arrow-config.json --arrow-replay-ratio 75-25
+```
+
+For ARROW runs, logs/checkpoints are written under `runs/<task_kind>/arrow/<ratio>/<run_name>/`, where `<ratio>` is the chosen ratio with the dash replaced by an underscore (e.g. `50_50`, `25_75`, `75_25`). DV3 and SAC runs go to `runs/<task_kind>/<algorithm>/<run_name>/`.
 
 ## SLURM Usage (example)
-The jobs are typically run as arrays, one config per task id:
+The jobs are typically run as arrays, one config per task id. The example below runs ARROW on the Atari single-task configs with an explicit FIFO/LTDM ratio; omit `--arrow-replay-ratio` to use the config default (`50-50`).
 ```bash
 #!/bin/bash
 #SBATCH --job-name=arrow_atari
@@ -95,17 +124,29 @@ source ~/miniconda3/etc/profile.d/conda.sh
 conda activate arrow
 
 # Move to project directory (example)
-cd "/path/to/ARROW/" 
+cd "/path/to/ARROW/"
+
+# Pick the ARROW FIFO/LTDM capacity ratio for this job:
+#   50-50 (default), 25-75, or 75-25.
+# Leave RATIO empty to fall back to the value stored in the config (defaults to 50-50).
+RATIO="50-50"
 
 # Collect config files (sorted)
 mapfile -t configs < <(ls "Configs/Atari configs/Single-task configs"/*.json | sort)
 config_file="${configs[$SLURM_ARRAY_TASK_ID]}"
 
-echo "[$SLURM_ARRAY_TASK_ID] $(date) → $config_file"
+echo "[$SLURM_ARRAY_TASK_ID] $(date) → $config_file (ratio=${RATIO:-from-config})"
 
 # Run experiment
+if [[ -n "$RATIO" ]]; then
+    python Code/ARROW_and_DV3/Atari/train.py --config "$config_file" --arrow-replay-ratio "$RATIO"
+else
     python Code/ARROW_and_DV3/Atari/train.py --config "$config_file"
-# or for sac
+fi
+
+# CoinRun variant:
+#   python Code/ARROW_and_DV3/CoinRun/train.py --config "$config_file" --arrow-replay-ratio "$RATIO"
+# SAC variant (no ratio flag):
 #   python Code/SAC/Atari/sac.py --config "$config_file"
 ```
 
