@@ -79,7 +79,7 @@ pip install .
 - ARROW and DV3 (CoinRun): `python Code/ARROW_and_DV3/CoinRun/train.py --config /path/to/config.json`
 - SAC: `python Code/SAC/Atari/sac.py --config /path/to/config.json`
 
-### ARROW FIFO / LTDM capacity ratio
+### ARROW FIFO / LTDM capacity ratio (Ablation)
 ARROW splits its trajectory-slot budget between the short-term FIFO buffer and the long-term distribution-matching (LTDM) buffer. The split is controlled by `arrow_replay_capacity_ratio`, which can be set in the config file or overridden on the command line via `--arrow-replay-ratio`. Supported values are:
 
 | Ratio | FIFO share | LTDM share |
