@@ -13,8 +13,16 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 import ale_py
 import replay
+from replay import MultiTypeReplay
 from ac import ActorCriticOpt, train_ac_from_wm
-from config import Config, EnvConfig, EnvScheduleConfig, RbConfig
+from config import (
+    Config,
+    EnvConfig,
+    EnvScheduleConfig,
+    RbConfig,
+    _arrow_fifo_ltdm_capacity_ns,
+    _arrow_fifo_ltdm_sampling_weights,
+)
 from generate_trajectory import (
     SequentialEnvironments,
     evaluate,
@@ -23,12 +31,83 @@ from generate_trajectory import (
 )
 from wm import WorldModel
 
+
+def _bytes_to_gib(num_bytes: int) -> float:
+    return num_bytes / (1024 ** 3)
+
+
+def _print_cuda_memory(tag: str) -> None:
+    if not torch.cuda.is_available():
+        print(f"[cuda-mem] {tag}: CUDA is not available.")
+        return
+    dev = torch.cuda.current_device()
+    allocated = torch.cuda.memory_allocated(dev)
+    reserved = torch.cuda.memory_reserved(dev)
+    peak_alloc = torch.cuda.max_memory_allocated(dev)
+    peak_reserved = torch.cuda.max_memory_reserved(dev)
+    # Reserved peak is usually the safer number for scheduler sizing.
+    suggested = peak_reserved * 1.15
+    print(
+        f"[cuda-mem] {tag} | device={dev} ({torch.cuda.get_device_name(dev)}) "
+        f"allocated={_bytes_to_gib(allocated):.2f} GiB "
+        f"reserved={_bytes_to_gib(reserved):.2f} GiB "
+        f"peak_allocated={_bytes_to_gib(peak_alloc):.2f} GiB "
+        f"peak_reserved={_bytes_to_gib(peak_reserved):.2f} GiB "
+        f"suggested_slurm_gpu_mem={_bytes_to_gib(suggested):.2f} GiB"
+    )
+
+
+def _print_replay_buffer_debug(config: Config, buf) -> None:
+    """Log replay capacities and ARROW FIFO vs LTDM minibatch sampling weights."""
+    print(
+        f"[replay] algorithm={config.algorithm} data_t={config.data_t} "
+        f"data_n_max={config.data_n_max}"
+    )
+    if isinstance(buf, MultiTypeReplay):
+        total_slots = 2 * config.data_n_max
+        n_fifo, n_ltdm = _arrow_fifo_ltdm_capacity_ns(
+            total_slots, config.arrow_replay_capacity_ratio
+        )
+        w_fifo, w_ltdm = _arrow_fifo_ltdm_sampling_weights(
+            config.arrow_replay_capacity_ratio
+        )
+        print(
+            f"[replay] ARROW total_trajectory_slots={total_slots} "
+            f"(2 * data_n_max), arrow_replay_capacity_ratio={config.arrow_replay_capacity_ratio}"
+        )
+        print(
+            f"[replay] capacity split: FifoReplay n={n_fifo} ({n_fifo / total_slots:.4f}), "
+            f"LongTermReplay n={n_ltdm} ({n_ltdm / total_slots:.4f})"
+        )
+        print(
+            f"[replay] minibatch sampling weights (random.choices): "
+            f"Fifo={w_fifo}, LTDM={w_ltdm} (sum={w_fifo + w_ltdm})"
+        )
+        for i, sub in enumerate(buf.replays):
+            sw = buf.sampling_weights[i]
+            nv = getattr(sub, "n_valid", None)
+            print(
+                f"[replay]   [{i}] {type(sub).__name__}: t={sub.t} n={sub.n} "
+                f"n_valid={nv} sampling_weight={sw}"
+            )
+    else:
+        dv3_max = getattr(config, "sac_dv3_data_n_max", None)
+        print(
+            f"[replay] single buffer: {type(buf).__name__} t={buf.t} n={buf.n} "
+            f"n_valid={buf.n_valid} (config.sac_dv3_data_n_max={dv3_max})"
+        )
+
+
 if __name__ == "__main__":
-    start_time = datetime.now()
-    print(f"Training started at {start_time.isoformat()}")
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", help="Configuration file")
+    parser.add_argument(
+        "--arrow-replay-ratio",
+        choices=["50-50", "25-75", "75-25"],
+        default=None,
+        help="ARROW: FIFO/LTDM capacity split (overrides config when set).",
+    )
     save_nets = False
     log_dir = None
     log_images = False
@@ -39,12 +118,21 @@ if __name__ == "__main__":
     else:
         config = None
 
+    if args.arrow_replay_ratio is not None:
+        config.arrow_replay_capacity_ratio = args.arrow_replay_ratio
+
+    if config.algorithm == "arrow":
+        print(f"ARROW FIFO/LTDM capacity ratio: {config.arrow_replay_capacity_ratio}")
+
     if config.algorithm == "sac":
         exit(0)
     
     torch.random.manual_seed(config.seed)
     np.random.seed(config.seed)
     print("Training with seed: ", config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        _print_cuda_memory("startup")
     wm = WorldModel(
         3,
         (32, 32),
@@ -58,7 +146,8 @@ if __name__ == "__main__":
     opt = Adam(wm.parameters(), lr=config.wm_lr)
 
     envs = config.get_env_schedule()
-    replay = config.get_replay_buffer()    
+    replay = config.get_replay_buffer()
+    _print_replay_buffer_debug(config, replay)
 
     # OPTIONAL: Load from existing
     aco: Optional[ActorCriticOpt] = None
@@ -68,7 +157,28 @@ if __name__ == "__main__":
         current_time = datetime.now().strftime("%b%d_%H-%M-%S")
         job_id = os.getenv("SLURM_JOB_ID")
         run_name = f"{current_time}_{socket.gethostname()}_{config.seed}_{job_id}"
-        log_dir  = os.path.join("runs", config.algorithm, run_name)      
+        # One env in the schedule → single-task; multiple → continual (sequential) training
+
+        if len(config.esc.env_configs) == 1: 
+            task_kind = "single"
+        else:
+            if config.esc.env_configs[0].name == "ALE/MsPacman-v5" and config.esc.kwargs["swap_sched"] == 90:
+                task_kind = "cl_original"
+            elif config.esc.env_configs[0].name == "ALE/Enduro-v5" and config.esc.kwargs["swap_sched"] == 90:
+                task_kind = "cl_reversed"
+            else:
+                task_kind = "cl_two_cycle"
+        
+        if config.algorithm == "arrow":
+            ratio = config.arrow_replay_capacity_ratio.replace("-", "_")
+            log_root = Path.cwd() / "runs" / task_kind / config.algorithm / ratio
+        else:
+            log_root = Path.cwd() / "runs" / task_kind / config.algorithm        
+
+        log_root.mkdir(parents=True, exist_ok=True)
+        log_dir = log_root / run_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[DEBUG] log_dir={log_dir}")
 
 
     writer = SummaryWriter(log_dir=log_dir)
@@ -80,11 +190,11 @@ if __name__ == "__main__":
 
     best_rews_mean = float("-inf")
     global_step = 0            # gradient updates so far  training iterations
-    runs_root = Path("runs") / config.algorithm  
-    runs_root.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(config.epochs):
         print("Starting Epoch ", epoch)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         if config.random_policy == "first":
             random_policy = epoch == 0
         elif config.random_policy == "new":
@@ -151,7 +261,6 @@ if __name__ == "__main__":
             print(f"Eval means: {eval_results_mean}")
             print(f"Eval stds: {eval_results_std}")
 
-        envs.step()
 
         progbar = trange(
             config.steps_per_batch
@@ -239,11 +348,14 @@ if __name__ == "__main__":
             )
 
         writer.add_scalar("Perf/approx_perf", approx_perf, global_step)
+        _print_cuda_memory(f"epoch_end_{epoch}")
 
         if save_nets:
             torch.save(wm.state_dict(), log_dir / "save_wm.pt")
             torch.save(aco.ac.state_dict(), log_dir / "save_ac.pt")
         
         
-
+        envs.step()
+        torch.cuda.empty_cache()
+    _print_cuda_memory("training_end")
 
