@@ -70,9 +70,9 @@ ARROW splits its trajectory-slot budget between the short-term FIFO buffer and t
 
 | Ratio | FIFO share | LTDM share |
 |------:|-----------:|-----------:|
-| `50-50` (default) | 1/2 | 1/2 |
-| `25-75` | 1/4 | 3/4 |
-| `75-25` | 3/4 | 1/4 |
+| `50-50` (default) | 50% | 50% |
+| `25-75` | 25% | 75% |
+| `75-25` | 75% | 25% |
 
 The same ratio is also used as the per-minibatch sampling weight between the two sub-buffers. If `--arrow-replay-ratio` is omitted, the value in the config is used; if neither is set, ARROW falls back to the `50-50` default. The flag is ignored by DV3 and SAC runs.
 
