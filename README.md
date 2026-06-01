@@ -2,23 +2,14 @@
 
 
 ## Abstract
-Continual reinforcement learning challenges agents to acquire new skills while retaining
-previously learned ones with the goal of improving performance across both past and future
-tasks. Most existing approaches rely on model-free methods with replay buffers to mitigate
-catastrophic forgetting, however these solutions often face significant scalability challenges
-due to large memory demands. Drawing inspiration from neuroscience, where the brain
-replays experiences to a predictive world model rather than directly to the policy, we present
-ARROW (Augmented Replay for RObust World models), a model-based continual RL
-algorithm that extends DreamerV3 with a memory-efficient, distribution-matching replay
-buffer. Unlike standard fixed-size FIFO buffers, ARROW maintains two complementary
-buffers: a short term buffer for recent experiences and a long-term buffer that preserves the
-task diversity by sampling intelligently. We evaluate ARROW on two challenging continual
-RL settings: Tasks without shared structure (Atari), and tasks with shared structure, where
-knowledge transfer is possible (Procgen Coinrun variants). Compared to model-free and
-model-based baselines with same-size replay buffers, ARROW demonstrates substantially
-reduced forgetting on tasks without shared structure tasks, while maintaining comparable
-forward transfer. Our findings highlight the potential of model-based RL and bio-inspired
-approaches for continual reinforcement learning justifying further research.
+Continual reinforcement learning challenges agents to acquire new skills while retaining previously learned ones with the goal of improving performance in both past and future tasks. Most existing approaches rely on model-free methods with replay buffers to mitigate catastrophic forgetting; however, these solutions often face significant scalability challenges due to large memory demands. 
+Drawing inspiration from neuroscience, where the brain replays experiences to a predictive World Model rather than directly to the policy, we present ARROW (Augmented Replay for RObust World models), a model-based continual RL algorithm that extends DreamerV3 with a memory-efficient, distribution-matching replay buffer.
+Unlike standard fixed-size FIFO buffers, ARROW maintains two complementary buffers: a short-term buffer for recent experiences and a long-term buffer that preserves task diversity through intelligent sampling.
+We evaluate ARROW on two challenging continual RL settings: Tasks without shared structure (Atari), and tasks with shared structure, where knowledge transfer is possible (Procgen CoinRun variants).
+Compared to model-free and model-based baselines with replay buffers of the same-size, ARROW demonstrates substantially less forgetting on tasks without shared structure, while maintaining comparable forward transfer.
+Our findings highlight the potential of model-based RL and bio-inspired approaches for continual reinforcement learning, warranting further research.
+
+Reviewed on OpenReview: https://openreview.net/forum?id=3FK2tFwNwK
 
 
 ## Repository Layout
