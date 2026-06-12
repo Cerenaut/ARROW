@@ -1,4 +1,4 @@
-# ARROW
+# ARROW: Augmented Replay for RObust World models
 
 
 ## Abstract
