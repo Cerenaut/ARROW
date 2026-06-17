@@ -6,6 +6,9 @@ Continual reinforcement learning challenges agents to acquire new skills while r
 
 Reviewed on OpenReview: https://openreview.net/forum?id=3FK2tFwNwK
 
+## Interactive Simulator
+
+An interactive walkthrough of ARROW is published at **[ARROW Simulator](https://azizgw.github.io/ARROW_Simulator/)**.
 
 ## Repository Layout
 - `Code/`
