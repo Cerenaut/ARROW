@@ -106,7 +106,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--arrow-replay-ratio",
         choices=["50-50", "25-75", "75-25"],
-        default=None,
+        default="50-50",
         help="ARROW: FIFO/LTDM capacity split (overrides config when set).",
     )
     save_nets = False
